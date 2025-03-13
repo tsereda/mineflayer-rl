@@ -16,8 +16,6 @@ class ParallelBotTraining {
   async initializeBots() {
     console.log(`\nInitializing ${this.config.botCount} bots...`);
     
-    const botInitPromises = [];
-    
     // Create all bots first without connecting
     for (let i = 0; i < this.config.botCount; i++) {
       const botOptions = {
@@ -330,19 +328,19 @@ class ParallelBotTraining {
   }
 }
 
-// Run parallel bot training
+// Run parallel bot training with 10 identical bots
 async function runParallelBotTraining() {
   const config = {
-    botCount: 3,
+    botCount: 7,  // Updated to 10 bots
     botOptions: {
       host: '192.168.0.231',  // Replace with your server IP
       port: 57641,            // Replace with your server port
-      username: 'ParaBot',    // Will be appended with bot number
+      username: 'Bot',        // Will be appended with bot number
       epsilon: 0.2,
       learning_rate: 0.1,
       discount_factor: 0.9
     },
-    episodes: 3,
+    episodes: 10,             // Set to 10 episodes
     maxStepsPerEpisode: 20,   // Shorter episodes for parallel bots
     shareKnowledge: true      // Whether bots should share their Q-tables
   };
@@ -351,43 +349,5 @@ async function runParallelBotTraining() {
   await parallelBots.trainAllBots();
 }
 
-// Run with specialized bots with different parameters
-async function runSpecializedParallelBots() {
-  const config = {
-    botCount: 3,
-    botOptions: {
-      host: '192.168.0.231',  // Replace with your server IP
-      port: 57641,            // Replace with your server port
-      username: 'SpecBot',    // Will be appended with bot number
-      epsilon: 0.2,
-      learning_rate: 0.1,
-      discount_factor: 0.9
-    },
-    episodes: 3,
-    maxStepsPerEpisode: 20,
-    shareKnowledge: false     // Independent learning
-  };
-  
-  const parallelBots = new ParallelBotTraining(config);
-  await parallelBots.initializeBots();
-  
-  // Modify bot parameters for specialization:
-  // Bot 1: Explorer (high exploration, learns slower)
-  parallelBots.bots[0].agent.epsilon = 0.4;
-  parallelBots.bots[0].agent.learning_rate = 0.05;
-  parallelBots.bots[0].options.username = 'Explorer';
-  
-  // Bot 2: Balanced (default parameters)
-  parallelBots.bots[1].options.username = 'Balanced';
-  
-  // Bot 3: Exploiter (low exploration, learns faster)
-  parallelBots.bots[2].agent.epsilon = 0.1;
-  parallelBots.bots[2].agent.learning_rate = 0.2;
-  parallelBots.bots[2].options.username = 'Exploiter';
-  
-  await parallelBots.trainAllBots();
-}
-
 // Run the parallel bot training
 runParallelBotTraining();
-// runSpecializedParallelBots();
