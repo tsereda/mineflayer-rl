@@ -66,18 +66,18 @@ class BotActions {
     }
     
     // Check if we're looking at a log
-    if (blockInSight.name.includes('log')) {
+    if (blockInSight.name.includes('log') || blockInSight.name.includes('leaves')) {
       try {
         console.log(`Breaking ${blockInSight.name} at ${blockInSight.position.x}, ${blockInSight.position.y}, ${blockInSight.position.z}`);
         await this.bot.dig(blockInSight);
-        console.log("Successfully broke log block!");
+        console.log("Successfully broke block!");
         return true;
       } catch (e) {
         console.log("Error breaking block:", e.message);
         return false;
       }
     } else {
-      console.log(`Not breaking ${blockInSight.name} (not a log)`);
+      console.log(`Not breaking ${blockInSight.name} (not a log or leaves)`);
       return false;
     }
   }

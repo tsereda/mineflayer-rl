@@ -331,16 +331,16 @@ class ParallelBotTraining {
 // Run parallel bot training with 10 identical bots
 async function runParallelBotTraining() {
   const config = {
-    botCount: 7,  // Updated to 10 bots
+    botCount: 3,  // Updated to 10 bots
     botOptions: {
       host: '192.168.0.231',  // Replace with your server IP
       port: 57641,            // Replace with your server port
       username: 'Bot',        // Will be appended with bot number
       epsilon: 0.2,
-      learning_rate: 0.1,
-      discount_factor: 0.9
+      learning_rate: 0.2,
+      discount_factor: 0.5
     },
-    episodes: 10,             // Set to 10 episodes
+    episodes: 50,             // Set to 10 episodes
     maxStepsPerEpisode: 20,   // Shorter episodes for parallel bots
     shareKnowledge: true      // Whether bots should share their Q-tables
   };
