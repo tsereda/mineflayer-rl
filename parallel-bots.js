@@ -125,7 +125,7 @@ class ParallelBotTraining {
           }
           
           // Small delay between steps to avoid overwhelming server
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
         
         // Episode completed - summarize results
