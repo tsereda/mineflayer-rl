@@ -1,8 +1,3 @@
-/**
- * Truly parallel multi-bot training for Minecraft tree-cutting RL
- * Uses Promise.all to make bots act simultaneously
- */
-
 const SimpleRLBot = require('./bot');
 
 class ParallelBotTraining {
@@ -12,11 +7,11 @@ class ParallelBotTraining {
     this.episodeRewards = [];
   }
 
-  // Initialize all bots
+  // Initialize bots
   async initializeBots() {
     console.log(`\nInitializing ${this.config.botCount} bots...`);
     
-    // Create all bots first without connecting
+    // Create bots without connecting
     for (let i = 0; i < this.config.botCount; i++) {
       const botOptions = {
         ...this.config.botOptions,
@@ -32,24 +27,23 @@ class ParallelBotTraining {
       this.episodeRewards[i] = [];
     }
     
-    // Connect bots in sequence to avoid overwhelming the server
+    // Connect bots 
     for (let i = 0; i < this.bots.length; i++) {
       console.log(`Connecting bot ${i + 1}: ${this.bots[i].options.username}`);
       await this.bots[i].connect();
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Wait between connections
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
     
     console.log(`All ${this.bots.length} bots initialized and connected`);
   }
   
-  // Run training with bots acting as simultaneously as possible
   async trainAllBots() {
     console.log('\n' + '═'.repeat(60));
     console.log('PARALLEL BOT MINECRAFT TREE CUTTING RL TRAINING');
     console.log('═'.repeat(60) + '\n');
     
     try {
-      // Initialize bots if not already done
+      // Initialize bots
       if (this.bots.length === 0) {
         await this.initializeBots();
       }
@@ -61,7 +55,6 @@ class ParallelBotTraining {
       for (let episode = 0; episode < episodes; episode++) {
         console.log(`\n=========== EPISODE ${episode + 1}/${episodes} ===========`);
         
-        // Reset all bots in parallel at the start of the episode
         console.log(`\nResetting all bots...`);
         
         const botStates = [];
@@ -69,13 +62,13 @@ class ParallelBotTraining {
         const botStartLogs = [];
         const botEpisodeStartTimes = Array(this.bots.length).fill(Date.now());
         
-        // Reset each bot sequentially (cannot be done in parallel due to server limitations)
+        // Reset each bot 
         for (let i = 0; i < this.bots.length; i++) {
           botStates[i] = await this.bots[i].reset();
           botStartLogs[i] = this.bots[i].last_inventory_count;
         }
         
-        // Run steps with all bots acting together
+        // Run steps 
         for (let step = 0; step < maxStepsPerEpisode; step++) {
           console.log(`\n----- STEP ${step + 1}/${maxStepsPerEpisode} -----`);
           
