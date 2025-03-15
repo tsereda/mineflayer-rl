@@ -34,11 +34,14 @@ class BotActions {
 
   async jumpUp() {
     this.bot.setControlState('jump', true);
+    this.bot.setControlState('forward', true);   
     await new Promise(resolve => setTimeout(resolve, 350));
+    this.bot.setControlState('forward', false);
     this.bot.setControlState('jump', false);
   }
 
   // Break block action
+  // In actions.js, update the breakBlock method
   async breakBlock() {
     // Find nearby logs
     const nearbyLogs = this.findNearbyBlocks('log', 5);

@@ -1,5 +1,38 @@
 const SimpleRLBot = require('./bot');
 
+// Parse command line arguments for server IP and port - no defaults
+function parseArgs() {
+  const args = process.argv.slice(2);
+  let serverIp = null;
+  let serverPort = null;
+  
+  // Parse arguments
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--ip' && i + 1 < args.length) {
+      serverIp = args[i + 1];
+      i++;
+    } else if (args[i] === '--port' && i + 1 < args.length) {
+      serverPort = parseInt(args[i + 1], 10);
+      i++;
+    }
+  }
+  
+  // Validate required arguments
+  if (!serverIp) {
+    console.error("ERROR: Missing required parameter --ip");
+    console.error("Usage: node parallel-bots.js --ip <SERVER_IP> --port <PORT>");
+    process.exit(1);
+  }
+  
+  if (!serverPort) {
+    console.error("ERROR: Missing required parameter --port");
+    console.error("Usage: node parallel-bots.js --ip <SERVER_IP> --port <PORT>");
+    process.exit(1);
+  }
+  
+  return { serverIp, serverPort };
+}
+
 class ParallelBotTraining {
   constructor(config) {
     this.config = config;
@@ -7,7 +40,7 @@ class ParallelBotTraining {
     this.episodeRewards = [];
   }
 
-  // Initialize bots
+  // Initialize bots with connection check
   async initializeBots() {
     console.log(`\nInitializing ${this.config.botCount} bots...`);
     
@@ -27,20 +60,40 @@ class ParallelBotTraining {
       this.episodeRewards[i] = [];
     }
     
-    // Connect bots 
+    // Connect bots with connection check
+    let connectionSuccessful = false;
+    
     for (let i = 0; i < this.bots.length; i++) {
       console.log(`Connecting bot ${i + 1}: ${this.bots[i].options.username}`);
-      await this.bots[i].connect();
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        await this.bots[i].connect();
+        await new Promise(resolve => setTimeout(resolve, 250));
+        console.log(`Bot ${i + 1} connected successfully!`);
+        connectionSuccessful = true;
+      } catch (error) {
+        console.error(`Failed to connect bot ${i + 1}: ${error.message}`);
+      }
     }
     
-    console.log(`All ${this.bots.length} bots initialized and connected`);
+    // Exit if no bots connected successfully
+    if (!connectionSuccessful) {
+      console.error("\nERROR: No bots were able to connect to the server.");
+      console.error(`Server: ${this.config.botOptions.host}:${this.config.botOptions.port}`);
+      console.error("Please check that:");
+      console.error("  1. The Minecraft server is running and open to LAN");
+      console.error("  2. The IP address and port are correct");
+      console.error("  3. There are no firewall issues blocking the connection");
+      process.exit(1);
+    }
+    
+    console.log(`Connected ${this.bots.filter(b => b.bot).length} out of ${this.bots.length} bots`);
   }
   
   async trainAllBots() {
     console.log('\n' + '═'.repeat(60));
     console.log('PARALLEL BOT MINECRAFT TREE CUTTING RL TRAINING');
     console.log('═'.repeat(60) + '\n');
+    console.log(`Server: ${this.config.botOptions.host}:${this.config.botOptions.port}`);
     
     try {
       // Initialize bots
@@ -64,8 +117,22 @@ class ParallelBotTraining {
         
         // Reset each bot 
         for (let i = 0; i < this.bots.length; i++) {
-          botStates[i] = await this.bots[i].reset();
-          botStartLogs[i] = this.bots[i].last_inventory_count;
+          try {
+            botStates[i] = await this.bots[i].reset();
+            botStartLogs[i] = this.bots[i].last_inventory_count;
+          } catch (error) {
+            console.error(`Error resetting bot ${i + 1}: ${error.message}`);
+            // Provide a default state if reset fails
+            botStates[i] = null;
+            botStartLogs[i] = 0;
+          }
+        }
+        
+        // Check if any bots have valid states
+        const validBots = botStates.filter(state => state !== null).length;
+        if (validBots === 0) {
+          console.error("ERROR: No bots could be reset. Terminating training.");
+          process.exit(1);
         }
         
         // Run steps 
@@ -77,6 +144,8 @@ class ParallelBotTraining {
           const stateKeys = [];
           
           for (let i = 0; i < this.bots.length; i++) {
+            if (!botStates[i]) continue; // Skip bots that failed to reset
+            
             const stateKey = this.bots[i].agent.getStateKey(botStates[i]);
             stateKeys[i] = stateKey;
             const action = this.bots[i].chooseAction(botStates[i]);
@@ -84,9 +153,14 @@ class ParallelBotTraining {
           }
           
           // PHASE 2: All bots execute actions in parallel
-          const actionPromises = this.bots.map((bot, index) => 
-            bot.executeAction(botActions[index])
-          );
+          const actionPromises = this.bots.map((bot, index) => {
+            if (!botStates[index]) return Promise.resolve(0); // Skip bots without state
+            return bot.executeAction(botActions[index])
+              .catch(error => {
+                console.error(`Error executing action for bot ${index + 1}: ${error.message}`);
+                return 0; // Return 0 reward on error
+              });
+          });
           
           // Wait for all actions to complete
           const rewards = await Promise.all(actionPromises);
@@ -95,26 +169,35 @@ class ParallelBotTraining {
           const nextStates = [];
           
           for (let i = 0; i < this.bots.length; i++) {
+            if (!botStates[i]) continue; // Skip bots without state
+            
             botTotalRewards[i] += rewards[i];
-            nextStates[i] = this.bots[i].getObservation();
-            
-            // Update Q-table
-            this.bots[i].updateQValues(botStates[i], botActions[i], rewards[i], nextStates[i]);
-            
-            // Display step info
-            this.displayStepInfo(
-              i + 1,
-              step + 1,
-              stateKeys[i],
-              botActions[i],
-              rewards[i],
-              nextStates[i]
-            );
+            try {
+              nextStates[i] = this.bots[i].getObservation();
+              
+              // Update Q-table
+              this.bots[i].updateQValues(botStates[i], botActions[i], rewards[i], nextStates[i]);
+              
+              // Display step info
+              this.displayStepInfo(
+                i + 1,
+                step + 1,
+                stateKeys[i],
+                botActions[i],
+                rewards[i],
+                nextStates[i]
+              );
+            } catch (error) {
+              console.error(`Error updating bot ${i + 1}: ${error.message}`);
+              nextStates[i] = botStates[i]; // Keep old state on error
+            }
           }
           
           // Update states for next step
           for (let i = 0; i < this.bots.length; i++) {
-            botStates[i] = nextStates[i];
+            if (nextStates[i]) {
+              botStates[i] = nextStates[i];
+            }
           }
           
           // Small delay between steps to avoid overwhelming server
@@ -127,6 +210,8 @@ class ParallelBotTraining {
         console.log('═'.repeat(60));
         
         for (let i = 0; i < this.bots.length; i++) {
+          if (!botStates[i]) continue; // Skip bots without state
+          
           const bot = this.bots[i];
           const episodeDuration = (Date.now() - botEpisodeStartTimes[i]) / 1000;
           const logsCollected = bot.last_inventory_count - botStartLogs[i];
@@ -165,6 +250,7 @@ class ParallelBotTraining {
     } catch (error) {
       console.error("Parallel bot training failed:", error);
       console.error(error.stack);
+      process.exit(1);
     }
   }
   
@@ -249,6 +335,8 @@ class ParallelBotTraining {
     console.log('\nPERFORMANCE COMPARISON:');
     
     for (let i = 0; i < this.bots.length; i++) {
+      if (!this.episodeRewards[i] || this.episodeRewards[i].length === 0) continue;
+      
       const rewards = this.episodeRewards[i];
       const lastReward = rewards[rewards.length - 1];
       const progressBar = this.createProgressBar(Math.max(0, lastReward), 10, 30);
@@ -264,6 +352,8 @@ class ParallelBotTraining {
     // Compare total rewards across episodes
     console.log('\nREWARD PROGRESSION BY BOT:');
     for (let botIndex = 0; botIndex < this.bots.length; botIndex++) {
+      if (!this.episodeRewards[botIndex] || this.episodeRewards[botIndex].length === 0) continue;
+      
       console.log(`\nBot ${botIndex + 1} (${this.bots[botIndex].options.username}):`);
       for (let ep = 0; ep < this.episodeRewards[botIndex].length; ep++) {
         const reward = this.episodeRewards[botIndex][ep];
@@ -321,26 +411,43 @@ class ParallelBotTraining {
   }
 }
 
-// Run parallel bot training with 10 identical bots
+// Run parallel bot training with configurable params
 async function runParallelBotTraining() {
-  const config = {
-    botCount: 3,  // Updated to 10 bots
-    botOptions: {
-      host: '192.168.0.231',  // Replace with your server IP
-      port: 57641,            // Replace with your server port
-      username: 'Bot',        // Will be appended with bot number
-      epsilon: 0.2,
-      learning_rate: 0.2,
-      discount_factor: 0.5
-    },
-    episodes: 50,             // Set to 10 episodes
-    maxStepsPerEpisode: 20,   // Shorter episodes for parallel bots
-    shareKnowledge: true      // Whether bots should share their Q-tables
-  };
-  
-  const parallelBots = new ParallelBotTraining(config);
-  await parallelBots.trainAllBots();
+  try {
+    // Get server IP and port from command line args - required
+    const { serverIp, serverPort } = parseArgs();
+    
+    const config = {
+      botCount: 7,  // Start with just 2 bots for testing
+      botOptions: {
+        host: serverIp,
+        port: serverPort,
+        username: 'Bot',        // Will be appended with bot number
+        epsilon: 0.2,
+        learning_rate: 0.2,
+        discount_factor: 0.5
+      },
+      episodes: 1000,               // Start with fewer episodes for testing
+      maxStepsPerEpisode: 20,
+      shareKnowledge: true
+    };
+    
+    console.log(`Starting training with ${config.botCount} bots on ${serverIp}:${serverPort}`);
+    
+    const parallelBots = new ParallelBotTraining(config);
+    await parallelBots.trainAllBots();
+  } catch (error) {
+    console.error("Training initialization failed:", error);
+    process.exit(1);
+  }
 }
 
-// Run the parallel bot training
-runParallelBotTraining();
+// Run the parallel bot training if this file is executed directly
+if (require.main === module) {
+  runParallelBotTraining();
+}
+
+module.exports = {
+  ParallelBotTraining,
+  parseArgs
+};

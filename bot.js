@@ -90,25 +90,34 @@ class SimpleRLBot {
   }
 
   // Execute action and get reward
+// In bot.js, modify the executeAction method
   async executeAction(actionIdx) {
+    let actionSuccess = false;
     const actionFunctions = [
       () => this.actions.moveForward(),    // 0: Move forward
       () => this.actions.turnLeft(),       // 1: Turn left
       () => this.actions.turnRight(),      // 2: Turn right 
       () => this.actions.jumpUp(),         // 3: Jump
-      () => this.actions.breakBlock()      // 4: Break block in front
+      async () => {                        // 4: Break block in front
+        // Return true/false directly from breakBlock
+        return await this.actions.breakBlock();
+      }
     ];
     
     if (actionIdx >= 0 && actionIdx < actionFunctions.length) {
-      await actionFunctions[actionIdx]();
+      // Store the result of the action (especially important for BREAK)
+      actionSuccess = await actionFunctions[actionIdx]();
     } else {
       console.warn(`Invalid action index: ${actionIdx}`);
     }
     
-    // Calculate reward: +1 for each new log collected
-    const current_count = this.actions.countLogsInInventory();
-    const reward = current_count - this.last_inventory_count;
-    this.last_inventory_count = current_count;
+    // Direct reward for breaking blocks
+    let reward = 0;
+    
+    // Give positive reward when breaking blocks successfully
+    if (actionIdx === 4 && actionSuccess === true) {
+      reward = 1.0; // Direct reward for breaking a block
+    }
     
     // Small negative reward for each step to encourage efficiency
     const step_penalty = -0.01;
