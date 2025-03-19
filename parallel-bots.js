@@ -67,7 +67,7 @@ class ParallelBotTraining {
       console.log(`Connecting bot ${i + 1}: ${this.bots[i].options.username}`);
       try {
         await this.bots[i].connect();
-        await new Promise(resolve => setTimeout(resolve, 250));
+        await new Promise(resolve => setTimeout(resolve, 150));
         console.log(`Bot ${i + 1} connected successfully!`);
         connectionSuccessful = true;
       } catch (error) {
@@ -418,7 +418,7 @@ async function runParallelBotTraining() {
     const { serverIp, serverPort } = parseArgs();
     
     const config = {
-      botCount: 7,  // Start with just 2 bots for testing
+      botCount: 3,  // Up to 7 on a Singleplayer LAN world, but I can make a server if we need more
       botOptions: {
         host: serverIp,
         port: serverPort,
