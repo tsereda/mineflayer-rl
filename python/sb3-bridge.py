@@ -1,5 +1,6 @@
 """
 PPO implementation using Stable-Baselines3 with JavaScript Mineflayer bot bridge
+With Weights & Biases integration for improved monitoring
 """
 
 import json
@@ -16,6 +17,10 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 
+# Import Weights & Biases
+import wandb
+from wandb.integration.sb3 import WandbCallback
+
 class MinecraftBridge:
     """Bridge between Python and JavaScript Mineflayer bot using ZeroMQ"""
     def __init__(self, host="127.0.0.1", port=5555, timeout=30000):
@@ -23,7 +28,7 @@ class MinecraftBridge:
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
         self.socket.connect(f"tcp://{host}:{port}")
-        self.socket.setsockopt(zmq.RCVTIMEO, timeout)  # 10 second timeout
+        self.socket.setsockopt(zmq.RCVTIMEO, timeout)  # 30 second timeout
     
     def get_state(self) -> Dict[str, Any]:
         """Get current state from the JS bot"""
@@ -33,16 +38,29 @@ class MinecraftBridge:
             raise Exception(f"Error getting state: {response.get('message', 'Unknown error')}")
         return response["state"]
     
-    def take_action(self, action: int) -> Dict[str, Any]:
-        """Send action to the JS bot and get result"""
-        self.socket.send_json({"type": "take_action", "action": int(action)})
-        response = self.socket.recv_json()
-        if response["status"] != "ok":
-            raise Exception(f"Error taking action: {response.get('message', 'Unknown error')}")
+    def take_action(self, action: int, max_retries=3) -> Dict[str, Any]:
+        """Send action to the JS bot and get result with retries"""
+        for attempt in range(max_retries):
+            try:
+                self.socket.send_json({"type": "take_action", "action": int(action)})
+                response = self.socket.recv_json()
+                if response["status"] != "ok":
+                    raise Exception(f"Error taking action: {response.get('message', 'Unknown error')}")
+                return {
+                    "reward": response["reward"],
+                    "next_state": response["next_state"],
+                    "done": response["done"]
+                }
+            except zmq.error.Again:
+                print(f"ZMQ timeout on attempt {attempt+1}/{max_retries}, retrying...")
+                time.sleep(1)
+        
+        # If all retries fail, force episode end
+        print("All retries failed, forcing episode end")
         return {
-            "reward": response["reward"],
-            "next_state": response["next_state"],
-            "done": response["done"]
+            "reward": -1.0,
+            "next_state": self.get_state(),  # Try to get current state
+            "done": True  # Force episode end
         }
     
     def reset(self) -> Dict[str, Any]:
@@ -208,7 +226,7 @@ class MinecraftEnv(gym.Env):
 
 class LoggingCallback(BaseCallback):
     """
-    Custom callback for logging training progress
+    Custom callback for logging training progress with W&B integration
     """
     def __init__(self, verbose=0):
         super(LoggingCallback, self).__init__(verbose)
@@ -229,14 +247,33 @@ class LoggingCallback(BaseCallback):
             if 'logs_collected' in self.locals['infos'][0]:
                 self.logs_collected = self.locals['infos'][0]['logs_collected']
         
+        # Log to W&B every 20 steps
+        if self.num_timesteps % 20 == 0:
+            wandb.log({
+                "current/logs_collected": self.logs_collected,
+                "current/episode_reward": self.current_episode_reward,
+                "current/timestep": self.num_timesteps
+            }, step=self.num_timesteps)
+        
         # Check if episode has ended
         if self.locals['dones'][0]:
             # Log episode stats
             self.episode_rewards.append(self.current_episode_reward)
             self.episode_lengths.append(self.num_timesteps - sum(self.episode_lengths))
             
+            # Calculate average reward
+            avg_reward = np.mean(self.episode_rewards[-10:]) if len(self.episode_rewards) >= 10 else np.mean(self.episode_rewards)
+            
+            # Log to W&B
+            wandb.log({
+                "episode/number": len(self.episode_rewards),
+                "episode/reward": self.current_episode_reward,
+                "episode/length": self.episode_lengths[-1],
+                "episode/logs_collected": self.logs_collected,
+                "episode/avg_reward_10": avg_reward
+            }, step=self.num_timesteps)
+            
             # Print episode summary
-            avg_reward = np.mean(self.episode_rewards[-10:]) if len(self.episode_rewards) > 0 else 0
             print(f"Episode: {len(self.episode_rewards)}")
             print(f"  Reward: {self.current_episode_reward:.2f}")
             print(f"  Length: {self.episode_lengths[-1]}")
@@ -270,8 +307,27 @@ def train_sb3_ppo(
     verbose=1
 ):
     """
-    Train a PPO agent using Stable-Baselines3
+    Train a PPO agent using Stable-Baselines3 with W&B integration
     """
+    # Initialize wandb
+    run = wandb.init(
+        project="minecraft-rl",
+        config={
+            "algorithm": "PPO",
+            "environment": "Minecraft-Tree-Cutting",
+            "learning_rate": learning_rate,
+            "n_steps": n_steps,
+            "batch_size": batch_size,
+            "n_epochs": n_epochs,
+            "gamma": gamma,
+            "gae_lambda": gae_lambda,
+            "clip_range": clip_range,
+            "bridge_host": bridge_host,
+            "bridge_port": bridge_port
+        },
+        sync_tensorboard=True  # Sync existing TensorBoard logs
+    )
+    
     # Create environment factory
     def env_fn():
         return make_env(bridge_host=bridge_host, bridge_port=bridge_port)
@@ -291,29 +347,59 @@ def train_sb3_ppo(
         gae_lambda=gae_lambda,
         clip_range=clip_range,
         verbose=verbose,
-        tensorboard_log="./minecraft_ppo_tensorboard/"
+        tensorboard_log=f"./minecraft_ppo_tensorboard/run_{run.id}/"
     )
     
-    # Create callback for logging
-    callback = LoggingCallback()
+    # Create callbacks
+    logging_callback = LoggingCallback()
+    wandb_callback = WandbCallback(
+        verbose=2,
+        model_save_path=f"models/{run.id}",
+        model_save_freq=1000,
+        gradient_save_freq=0  # Disable gradient saving to reduce overhead
+    )
     
     try:
-        # Train the model
-        model.learn(total_timesteps=total_timesteps, callback=callback)
+        # Train the model with both callbacks
+        model.learn(
+            total_timesteps=total_timesteps, 
+            callback=[logging_callback, wandb_callback]
+        )
         
-        # Save model
-        model.save(save_path)
-        print(f"Model saved to {save_path}")
+        # Save final model
+        final_model_path = f"{save_path}_{run.id}"
+        model.save(final_model_path)
+        
+        # Log model artifact to W&B
+        wandb.save(final_model_path + ".zip")
+        print(f"Model saved to {final_model_path}")
     
     except KeyboardInterrupt:
         # Save model on keyboard interrupt
         print("Training interrupted, saving model...")
-        model.save(f"{save_path}_interrupted")
-        print(f"Model saved to {save_path}_interrupted")
+        interrupted_model_path = f"{save_path}_interrupted_{run.id}"
+        model.save(interrupted_model_path)
+        
+        # Log interrupted model artifact to W&B
+        wandb.save(interrupted_model_path + ".zip")
+        print(f"Model saved to {interrupted_model_path}")
+    
+    except Exception as e:
+        print(f"Error during training: {e}")
+        # Try to save model even if there's an error
+        try:
+            error_model_path = f"{save_path}_error_{run.id}"
+            model.save(error_model_path)
+            wandb.save(error_model_path + ".zip")
+            print(f"Model saved to {error_model_path} despite error")
+        except:
+            print("Could not save model after error")
     
     finally:
         # Close environment
         env.close()
+        # Finish wandb run
+        run.finish()
     
     return model
 
@@ -322,8 +408,17 @@ if __name__ == "__main__":
     bridge_host = "127.0.0.1"
     bridge_port = 5555
     
-    print(f"Training PPO agent with Stable-Baselines3")
+    print(f"Training PPO agent with Stable-Baselines3 and Weights & Biases")
     print(f"Connecting to JavaScript bridge at {bridge_host}:{bridge_port}")
+    
+    # Install wandb if not already installed
+    try:
+        import wandb
+    except ImportError:
+        print("Weights & Biases not found. Installing...")
+        import subprocess
+        subprocess.check_call(["pip", "install", "wandb"])
+        import wandb
     
     model = train_sb3_ppo(
         bridge_host=bridge_host,
