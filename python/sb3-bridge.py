@@ -104,7 +104,7 @@ class MinecraftEnv(gym.Env):
         # Initialize state
         self.current_state = None
         self.steps = 0
-        self.max_steps = 200  # Maximum steps per episode
+        self.max_steps = 100  # Maximum steps per episode
     
     def process_state(self, state_dict: Dict[str, Any]) -> np.ndarray:
         """Convert state dictionary from JavaScript to normalized state vector"""
