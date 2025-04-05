@@ -18,7 +18,7 @@ from stable_baselines3.common.monitor import Monitor
 
 class MinecraftBridge:
     """Bridge between Python and JavaScript Mineflayer bot using ZeroMQ"""
-    def __init__(self, host="127.0.0.1", port=5555, timeout=10000):
+    def __init__(self, host="127.0.0.1", port=5555, timeout=30000):
         # Initialize ZeroMQ connection
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
@@ -261,7 +261,7 @@ def train_sb3_ppo(
     total_timesteps=100000,
     save_path="minecraft_ppo",
     learning_rate=3e-4,
-    n_steps=2048,
+    n_steps=100,
     batch_size=64,
     n_epochs=10,
     gamma=0.99,

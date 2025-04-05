@@ -1,1 +1,3 @@
 node_modules/
+minecraft_ppo_tensorboard/
+minecraft_ppo_model_interrupted.zip
