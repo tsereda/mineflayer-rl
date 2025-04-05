@@ -1,0 +1,5 @@
+numpy
+gymnasium
+zmq
+stable_baselines3
+pip install wandb

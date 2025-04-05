@@ -324,8 +324,7 @@ def train_sb3_ppo(
             "clip_range": clip_range,
             "bridge_host": bridge_host,
             "bridge_port": bridge_port
-        },
-        sync_tensorboard=True  # Sync existing TensorBoard logs
+        }
     )
     
     # Create environment factory
@@ -346,9 +345,8 @@ def train_sb3_ppo(
         gamma=gamma,
         gae_lambda=gae_lambda,
         clip_range=clip_range,
-        verbose=verbose,
-        tensorboard_log=f"./minecraft_ppo_tensorboard/run_{run.id}/"
-    )
+        verbose=verbose
+        )
     
     # Create callbacks
     logging_callback = LoggingCallback()

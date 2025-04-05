@@ -45,3 +45,5 @@
 2. Run
    ```bash
    node parallel-bots.js --ip <SERVER_IP> --port <PORT>
+
+npm install zeromq
