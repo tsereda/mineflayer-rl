@@ -4,13 +4,12 @@ const zmq = require('zeromq');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const BotActions = require('./actions'); // Corrected require
-// const Vec3 = require('vec3').Vec3; // Only needed if Vec3 used directly here
 
 // Initialize the bridge
 class RLBridge {
   constructor(options = {}) {
-    this.zmqAddress = options.zmqAddress || '127.0.0.1';
-    this.zmqPort = options.zmqPort || 5555; // Default ZMQ Port
+    this.zmqAddress = '127.0.0.1'; // Default ZMQ Address
+    this.zmqPort = 5555; // Default ZMQ Port
     this.botOptions = options.botOptions || {};
     this.socket = new zmq.Reply();
     this.bot = null;
@@ -46,28 +45,16 @@ class RLBridge {
         })
     });
 
-    // ---> Wait for mcData after spawn <---
-    // Wait for mcData after spawn with manual attachment fallback
-    let mcDataCheckCount = 0;
-    const maxMcDataChecks = 100; // Reduced wait time since we'll manually attach
-    const minecraftData = require('minecraft-data'); // Add this at the top of the file with other requires
-
-    while (!this.bot.mcData && mcDataCheckCount < maxMcDataChecks) {
-        console.log(`Waiting for mcData to load... (${mcDataCheckCount + 1}/${maxMcDataChecks})`);
-        await new Promise(resolve => setTimeout(resolve, 100));
-        mcDataCheckCount++;
-    }
-
-    // If mcData still not available, manually attach it
-    if (!this.bot.mcData) {
-        console.log("mcData not found after waiting. Attempting manual attachment...");
-        if (this.bot.version) {
-            this.bot.mcData = minecraftData(this.bot.version);
-            console.log(`Manually attached mcData for version ${this.bot.version}`);
-        } else {
-            console.log("Cannot attach mcData: bot.version is undefined");
-            throw new Error("Failed to determine Minecraft version for manual mcData attachment");
-        }
+    // Skip waiting and go straight to manual mcData attachment
+    const minecraftData = require('minecraft-data');
+    
+    console.log("Directly attaching mcData...");
+    if (this.bot.version) {
+        this.bot.mcData = minecraftData(this.bot.version);
+        console.log(`Manually attached mcData for version ${this.bot.version}`);
+    } else {
+        console.log("Cannot attach mcData: bot.version is undefined");
+        throw new Error("Failed to determine Minecraft version for manual mcData attachment");
     }
 
     // Verify mcData is now available
@@ -79,8 +66,6 @@ class RLBridge {
     }
 
     console.log("mcData available - proceeding with bot initialization");
-    // ---> END mcData Wait Section <---
-
 
     this.setupEventHandlers(); // Now safe to set up handlers that might use mcData indirectly
     this.isConnected = true;
@@ -347,50 +332,18 @@ class RLBridge {
 // --- Main Execution ---
 async function main() {
   const argv = yargs(hideBin(process.argv))
-    .usage('Usage: node $0 --mcHost <LAN_IP_Address> --mcPort <LAN_Port_Number> [options]')
+    .usage('Usage: node $0 --ip <LAN_IP_Address> --port <LAN_Port_Number>')
     // --- Required Arguments for Minecraft Connection ---
-    .option('mcHost', {
-        alias: ['H', 'ip'], // Added 'ip' alias
+    .option('ip', {
         type: 'string',
         description: 'REQUIRED: The IP address of the computer hosting the Minecraft LAN game (find with ipconfig/ip addr)',
     })
-    .option('mcPort', {
-        alias: 'P',
+    .option('port', {
         type: 'number',
         description: 'REQUIRED: The port number displayed in Minecraft chat after opening to LAN',
     })
-    // --- Optional Arguments with Defaults ---
-    .option('zmqPort', {
-        alias: ['p', 'zmq-port'],
-        type: 'number',
-        description: 'Port for Python<->Node communication',
-        default: 5555 // Default ZMQ Port
-    })
-     .option('mcUsername', {
-        alias: ['u', 'username'],
-        type: 'string',
-        description: 'Minecraft bot username',
-        default: 'RLBot' // Default username
-    })
-     .option('zmqAddress', {
-        alias: ['a', 'zmq-address'],
-        type: 'string',
-        description: 'Address for Python<->Node communication',
-        default: '127.0.0.1' // Default ZMQ address (localhost)
-     })
-     .option('mcAuth', {
-        alias: ['auth'],
-        type: 'string',
-        description: 'Minecraft authentication method',
-        default: 'offline' // Default to offline for LAN
-     })
-     .option('mcVersion', {
-        alias: ['v', 'version'],
-        type: 'string',
-        description: 'Minecraft version (usually auto-detected)',
-     })
-     // --- Demand the required arguments ---
-     .demandOption(['mcHost', 'mcPort'], 'Please provide the Minecraft host IP (--mcHost) and LAN port (--mcPort)')
+    // --- Demand the required arguments ---
+    .demandOption(['ip', 'port'], 'Please provide the Minecraft host IP (--ip) and LAN port (--port)')
     .help()
     .alias('help', 'h')
     .argv;
@@ -414,17 +367,14 @@ async function main() {
   process.once('SIGTERM', () => shutdown('SIGTERM')); // Handle termination signal
 
   try {
-      // Create RLBridge instance
+      // Create RLBridge instance with simplified options
       bridge = new RLBridge({
-        zmqAddress: argv.zmqAddress,
-        zmqPort: argv.zmqPort,
         botOptions: {
-          host: argv.mcHost,       // REQUIRED via command line
-          port: argv.mcPort,       // REQUIRED via command line
-          username: argv.mcUsername, // Default: RLBot
-          auth: argv.mcAuth,       // Default: offline
-          version: argv.mcVersion  // Default: auto-detect
-          // Add other mineflayer options here if needed
+          host: argv.ip,         // IP address (required)
+          port: argv.port,       // Port (required)
+          username: 'RLBot',     // Default username
+          auth: 'offline'        // Default: offline for LAN
+          // Other defaults handled in RLBridge constructor
         }
       });
 
