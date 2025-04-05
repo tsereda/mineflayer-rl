@@ -7,12 +7,6 @@ const Vec3 = require('vec3').Vec3;
 class BotActions {
   constructor(bot) {
     this.bot = bot;
-    this.mcData = null;
-  }
-  
-  // Initialize minecraft data
-  setMcData(mcData) {
-    this.mcData = mcData;
   }
 
   // Basic movement actions
@@ -87,8 +81,9 @@ class BotActions {
   
   // Helper methods for finding blocks
   findNearbyBlocks(blockName, radius) {
-    if (!this.mcData) {
-      console.warn("McData not initialized");
+    const mcData = this.bot.mcData;
+    if (!mcData) { // Check if bot.mcData is loaded
+      console.warn("Bot's mcData not loaded yet.");
       return [];
     }
     
@@ -97,8 +92,8 @@ class BotActions {
     const possibleNames = [blockName, `oak_${blockName}`, 'log', 'oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log'];
     
     for (const name of possibleNames) {
-      if (this.mcData.blocksByName[name]) {
-        blockIds.push(this.mcData.blocksByName[name].id);
+      if (mcData.blocksByName[name]) {
+        blockIds.push(mcData.blocksByName[name].id);
       }
     }
     
