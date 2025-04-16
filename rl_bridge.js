@@ -1,400 +1,554 @@
-// JavaScript side (Mineflayer bot) - Optimized for LAN Connection with mcData fix
+// Parallelized JavaScript RL bridge for managing multiple Minecraft bots
 const mineflayer = require('mineflayer');
 const zmq = require('zeromq');
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
-const BotActions = require('./actions'); // Corrected require
+const BotActions = require('./actions');
 
-// Initialize the bridge
-class RLBridge {
+class RLBridgeServer {
   constructor(options = {}) {
-    this.zmqAddress = '127.0.0.1'; // Default ZMQ Address
-    this.zmqPort = 5555; // Default ZMQ Port
-    this.botOptions = options.botOptions || {};
-    this.socket = new zmq.Reply();
-    this.bot = null;
-    this.actions = null;
-    this.currentState = null;
-    this.isConnected = false;
+    this.serverOptions = {
+      host: options.host || 'localhost',
+      port: options.port || 25565,
+      basePort: options.basePort || 5555,
+      numBots: options.numBots || 3,
+    };
+    
+    // Map to store bot instances: Map<botId, {socket, bot, actions, currentState, isConnected}>
+    this.bots = new Map();
+    this.shuttingDown = false;
   }
 
   async init() {
-    const bindAddress = `tcp://${this.zmqAddress}:${this.zmqPort}`;
-    await this.socket.bind(bindAddress);
-    console.log(`ZeroMQ server bound to ${bindAddress} (for Python connection)`);
-
-    console.log('Connecting to Minecraft server:', this.botOptions);
-    this.bot = mineflayer.createBot(this.botOptions);
-    this.actions = new BotActions(this.bot); // Correctly instantiate
-
-    console.log('Waiting for bot to spawn in Minecraft...');
-    await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Bot spawn timed out (is Minecraft server running and accessible?)')), 60000);
-        this.bot.once('spawn', () => {
-            clearTimeout(timeout);
-            console.log('Bot spawned successfully in Minecraft.');
-            resolve();
-        });
-        this.bot.once('end', (reason) => {
-            clearTimeout(timeout);
-            reject(new Error(`Bot disconnected before spawning: ${reason}`));
-        });
-        this.bot.once('error', (err) => {
-            clearTimeout(timeout);
-            reject(new Error(`Bot connection error before spawning: ${err.message}`));
-        })
-    });
-
-    // Skip waiting and go straight to manual mcData attachment
-    const minecraftData = require('minecraft-data');
+    console.log(`Initializing RL Bridge Server with ${this.serverOptions.numBots} bots...`);
+    console.log(`Minecraft Server: ${this.serverOptions.host}:${this.serverOptions.port}`);
     
-    console.log("Directly attaching mcData...");
-    if (this.bot.version) {
-        this.bot.mcData = minecraftData(this.bot.version);
-        console.log(`Manually attached mcData for version ${this.bot.version}`);
-    } else {
-        console.log("Cannot attach mcData: bot.version is undefined");
-        throw new Error("Failed to determine Minecraft version for manual mcData attachment");
+    // Start all bots
+    const initPromises = [];
+    for (let i = 0; i < this.serverOptions.numBots; i++) {
+      const botId = `bot_${i}`;
+      const zmqPort = this.serverOptions.basePort + i;
+      
+      initPromises.push(this.initializeBot(botId, zmqPort, i));
     }
-
-    // Verify mcData is now available
-    if (!this.bot.mcData) {
-        if (this.bot) {
-            this.bot.end('mcData failed to load and manual attachment failed');
-        }
-        throw new Error("mcData failed to load after spawn and manual attachment. Cannot continue.");
-    }
-
-    console.log("mcData available - proceeding with bot initialization");
-
-    this.setupEventHandlers(); // Now safe to set up handlers that might use mcData indirectly
-    this.isConnected = true;
-    console.log('Starting ZeroMQ main loop (waiting for Python commands)...');
-    this.mainLoop(); // Start processing requests
-  }
-
-  setupEventHandlers() {
-    this.bot.on('physicsTick', () => {
-      // Only get observation if bot is ready and actions are initialized
-      if (this.bot && this.bot.entity && this.actions && this.bot.mcData) {
-          this.currentState = this.getObservation();
-      }
-    });
-    this.bot.on('error', (err) => {
-        console.error("Mineflayer Bot Error:", err);
-        // Consider more robust error handling, maybe attempt reconnect or shutdown
-        // this.close().catch(console.error);
-    });
-    this.bot.on('kicked', (reason, loggedIn) => {
-        console.error(`Bot kicked from server. Reason: ${reason}. Logged in: ${loggedIn}`);
-        this.close().catch(console.error); // Shutdown on kick
-    });
-     this.bot.on('end', (reason) => {
-        console.log(`Bot disconnected from Minecraft. Reason: ${reason}`);
-        this.isConnected = false; // Stop ZMQ loop
-        // Attempt cleanup, ensure called only once if end triggers close
-        if(this.bot) { // Check if bot object still exists
-            this.close().catch(e => console.error('Error during cleanup after disconnect:', e));
-        }
-     });
-  }
-
-  getObservation() {
-    // Extra safeguard: Ensure needed components are ready
-    if (!this.bot || !this.bot.entity || !this.actions || !this.bot.mcData) {
-        // console.warn('Attempted to get observation before bot/entity/actions/mcData are ready.');
-        return null;
-    }
-    const pos = this.bot.entity.position;
-    // Add try...catch around potentially failing action calls
+    
     try {
-        const nearbyLogs = this.actions.findNearbyBlocks('log', 10);
-        const closestLog = this.actions.findClosestBlock(nearbyLogs);
-        const inventoryLogs = this.actions.countLogsInInventory();
-
-        return {
-          position: {x: pos.x, y: pos.y, z: pos.z},
-          yaw: this.bot.entity.yaw,
-          pitch: this.bot.entity.pitch,
-          inventory_logs: inventoryLogs,
-          tree_visible: nearbyLogs.length > 0,
-          closest_log: closestLog ? {
-            x: closestLog.position.x,
-            y: closestLog.position.y,
-            z: closestLog.position.z,
-            distance: this.actions.distanceTo(closestLog.position)
-          } : null
-        };
+      await Promise.all(initPromises);
+      console.log(`Successfully initialized ${this.bots.size} out of ${this.serverOptions.numBots} bots`);
+      
+      if (this.bots.size === 0) {
+        throw new Error("No bots could be initialized. Check Minecraft server connectivity.");
+      }
     } catch (error) {
-        console.error("Error during getObservation:", error);
-        return null; // Return null or a default state on error
+      console.error("Error during initialization:", error);
+      await this.shutdown();
+      throw error;
     }
   }
 
-  async mainLoop() {
-    while (this.isConnected) {
-      try {
-        const [message] = await this.socket.receive();
-        if (!this.isConnected) break; // Re-check connection after potentially long wait
+  async initializeBot(botId, zmqPort, index) {
+    console.log(`Initializing ${botId} with ZMQ port ${zmqPort}...`);
 
-        const request = JSON.parse(message.toString());
-        let response = {};
-        let status = 'ok'; // Default status
-
-        // Ensure bot and actions are ready before processing commands that need them
-        const isBotReady = this.bot && this.bot.entity && this.actions && this.bot.mcData;
-
-        if (request.type === 'get_state') {
-          if (isBotReady) {
-             response = { status: 'ok', state: this.currentState };
-          } else {
-             status = 'error';
-             response = { status: status, message: 'Bot not fully ready for get_state' };
-          }
-        }
-        else if (request.type === 'take_action') {
-          if (isBotReady) {
-              const actionIndex = request.action;
-              const result = await this.executeAction(actionIndex);
-              response = { status: 'ok', reward: result.reward, next_state: this.currentState, done: result.done };
-          } else {
-              status = 'error';
-              response = { status: status, message: 'Bot not ready for take_action', reward: 0, next_state: null, done: true }; // Fail episode if not ready
-          }
-        }
-        else if (request.type === 'reset') {
-           if (isBotReady) {
-               await this.reset();
-               response = { status: 'ok', state: this.currentState };
-           } else {
-               status = 'error';
-               response = { status: status, message: 'Bot not ready for reset', state: null };
-           }
-        }
-         else if (request.type === 'close') {
-             console.log('Received close request from Python client.');
-             this.isConnected = false; // Signal loop to stop
-             response = { status: 'ok', message: 'Closing down.'};
-         }
-        else {
-           status = 'error';
-           response = { status: status, message: 'Unknown request type' };
-        }
-
-        // Send response if socket still open
-        if (this.socket && !this.socket.closed) {
-            await this.socket.send(JSON.stringify(response));
-        } else {
-            console.warn("ZMQ Socket closed before sending response. Loop terminating.");
-            this.isConnected = false; // Ensure loop terminates
-        }
-
-      } catch (error) {
-        // Handle ZMQ/JSON errors
-        if (error.code === 'EAGAIN' || error.code === 'EFSM') {
-            console.warn(`ZeroMQ socket operation potentially interrupted (Code: ${error.code}). Shutting down? ${!this.isConnected}`);
-             if (!this.isConnected) break; // Exit loop if intended shutdown
-        } else {
-            console.error('Error in ZMQ main loop:', error);
-        }
-
-        // Attempt to send error back to client if possible
-        if (this.isConnected && this.socket && !this.socket.closed) {
-          try {
-            await this.socket.send(JSON.stringify({ status: 'error', message: error.message || 'Unknown ZMQ loop error.' }));
-          } catch (sendError) {
-            console.error('Failed to send ZMQ error response:', sendError);
-             this.isConnected = false; // Assume client disconnected if send fails
-          }
-        } else if (!this.isConnected) {
-             break; // Exit loop if already disconnected
-        }
+    try {
+      // Set up ZMQ Reply socket
+      const socket = new zmq.Reply();
+      const bindAddress = `tcp://127.0.0.1:${zmqPort}`;
+      await socket.bind(bindAddress);
+      console.log(`[${botId}] ZMQ socket bound to ${bindAddress}`);
+      
+      // Create Mineflayer bot with offset spawn position
+      const botOptions = {
+        host: this.serverOptions.host,
+        port: this.serverOptions.port,
+        username: `RLBot_${index}`,
+        auth: 'offline',
+        // Spread bots 2 blocks apart to avoid collision
+        position: { x: index * 2, y: 0, z: index * 2 }
+      };
+      
+      const bot = mineflayer.createBot(botOptions);
+      
+      // Wait for bot to spawn
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`[${botId}] Bot spawn timed out`)), 60000);
+        
+        bot.once('spawn', () => {
+          clearTimeout(timeout);
+          console.log(`[${botId}] Bot spawned successfully`);
+          resolve();
+        });
+        
+        bot.once('end', (reason) => {
+          clearTimeout(timeout);
+          reject(new Error(`[${botId}] Bot disconnected before spawning: ${reason}`));
+        });
+        
+        bot.once('error', (err) => {
+          clearTimeout(timeout);
+          reject(new Error(`[${botId}] Bot connection error: ${err.message}`));
+        });
+      });
+      
+      // Attach mcData manually
+      const minecraftData = require('minecraft-data');
+      if (bot.version) {
+        bot.mcData = minecraftData(bot.version);
+        console.log(`[${botId}] Attached mcData for version ${bot.version}`);
+      } else {
+        throw new Error(`[${botId}] Failed to determine Minecraft version`);
       }
-    } // end while loop
-    console.log("ZMQ Main loop finished.");
-    await this.close(); // Ensure cleanup happens when loop ends
+      
+      // Set up the actions class
+      const actions = new BotActions(bot);
+      
+      // Register the bot in our map
+      this.bots.set(botId, {
+        socket,
+        bot,
+        actions,
+        currentState: null,
+        isConnected: true
+      });
+      
+      // Set up event handlers for this bot
+      this.setupBotEventHandlers(botId);
+      
+      // Start the message loop for this bot
+      this.startMessageLoop(botId);
+      
+      return true;
+    } catch (error) {
+      console.error(`[${botId}] Initialization failed:`, error.message);
+      
+      // Cleanup if bot was partially initialized
+      if (this.bots.has(botId)) {
+        const botData = this.bots.get(botId);
+        
+        // Close socket if initialized
+        if (botData.socket && !botData.socket.closed) {
+          await botData.socket.close().catch(e => console.error(`[${botId}] Error closing socket:`, e));
+        }
+        
+        // Disconnect bot if initialized
+        if (botData.bot) {
+          botData.bot.end(`[${botId}] Cleanup after initialization error`);
+        }
+        
+        // Remove from map
+        this.bots.delete(botId);
+      }
+      
+      throw error;
+    }
   }
 
-  async executeAction(actionIndex) {
-     // Safeguard already present, but good practice
-     if (!this.bot || !this.actions || !this.bot.mcData) {
-         console.error("Attempted executeAction before bot/actions/mcData ready.");
-         return { reward: -1, done: true }; // Penalize and end episode
-     }
+  setupBotEventHandlers(botId) {
+    const botData = this.bots.get(botId);
+    if (!botData) return;
+    
+    const { bot, actions } = botData;
+    
+    // Update state on physics tick
+    bot.on('physicsTick', () => {
+      if (bot && bot.entity && actions && bot.mcData) {
+        try {
+          botData.currentState = this.getObservation(botId);
+        } catch (error) {
+          console.error(`[${botId}] Error updating state:`, error.message);
+        }
+      }
+    });
+    
+    // Handle errors
+    bot.on('error', (err) => {
+      console.error(`[${botId}] Bot error:`, err.message);
+    });
+    
+    // Handle disconnects/kicks
+    bot.on('end', (reason) => {
+      console.log(`[${botId}] Bot disconnected: ${reason}`);
+      botData.isConnected = false;
+      
+      // Clean up if not in shutdown process
+      if (!this.shuttingDown) {
+        this.cleanupBot(botId).catch(e => 
+          console.error(`[${botId}] Error during cleanup:`, e)
+        );
+      }
+    });
+    
+    bot.on('kicked', (reason) => {
+      console.error(`[${botId}] Bot kicked: ${reason}`);
+      botData.isConnected = false;
+    });
+  }
+
+  getObservation(botId) {
+    const botData = this.bots.get(botId);
+    if (!botData) return null;
+    
+    const { bot, actions } = botData;
+    
+    // Safety check
+    if (!bot || !bot.entity || !actions || !bot.mcData) {
+      return null;
+    }
+    
+    try {
+      const pos = bot.entity.position;
+      const nearbyLogs = actions.findNearbyBlocks('log', 10);
+      const closestLog = actions.findClosestBlock(nearbyLogs);
+      const inventoryLogs = actions.countLogsInInventory();
+      
+      return {
+        position: {x: pos.x, y: pos.y, z: pos.z},
+        yaw: bot.entity.yaw,
+        pitch: bot.entity.pitch,
+        inventory_logs: inventoryLogs,
+        tree_visible: nearbyLogs.length > 0,
+        closest_log: closestLog ? {
+          x: closestLog.position.x,
+          y: closestLog.position.y,
+          z: closestLog.position.z,
+          distance: actions.distanceTo(closestLog.position)
+        } : null
+      };
+    } catch (error) {
+      console.error(`[${botId}] Error getting observation:`, error.message);
+      return null;
+    }
+  }
+
+  async startMessageLoop(botId) {
+    const botData = this.bots.get(botId);
+    if (!botData) return;
+    
+    console.log(`[${botId}] Starting message loop...`);
+    
+    while (botData.isConnected && !this.shuttingDown) {
+      try {
+        // Wait for message
+        const [message] = await botData.socket.receive();
+        
+        // Check if we're still connected
+        if (!botData.isConnected || this.shuttingDown) break;
+        
+        // Process message
+        let request;
+        try {
+          request = JSON.parse(message.toString());
+        } catch (e) {
+          console.error(`[${botId}] Invalid JSON received:`, e.message);
+          if (botData.socket && !botData.socket.closed) {
+            await botData.socket.send(JSON.stringify({
+              status: 'error',
+              message: 'Invalid JSON'
+            }));
+          }
+          continue;
+        }
+        
+        let response = { status: 'ok' };
+        
+        // Check if bot is ready
+        const isBotReady = botData.bot && botData.bot.entity && botData.actions && botData.bot.mcData;
+        
+        if (!isBotReady) {
+          response = { 
+            status: 'error', 
+            message: `[${botId}] Bot not fully initialized` 
+          };
+        } else {
+          // Process request based on type
+          switch (request.type) {
+            case 'get_state':
+              response.state = botData.currentState || this.getObservation(botId) || {
+                position: {x: 0, y: 0, z: 0},
+                yaw: 0, pitch: 0,
+                inventory_logs: 0,
+                tree_visible: false,
+                closest_log: null
+              };
+              break;
+              
+            case 'take_action':
+              const result = await this.executeAction(botId, request.action);
+              response.reward = result.reward;
+              response.next_state = botData.currentState || {
+                position: {x: 0, y: 0, z: 0},
+                yaw: 0, pitch: 0,
+                inventory_logs: 0,
+                tree_visible: false,
+                closest_log: null
+              };
+              response.done = result.done;
+              break;
+              
+            case 'reset':
+              await this.resetBot(botId);
+              response.state = botData.currentState || {
+                position: {x: 0, y: 0, z: 0},
+                yaw: 0, pitch: 0,
+                inventory_logs: 0,
+                tree_visible: false,
+                closest_log: null
+              };
+              break;
+              
+            case 'close':
+              botData.isConnected = false;
+              response.message = `[${botId}] Closing down`;
+              break;
+              
+            default:
+              response = { 
+                status: 'error', 
+                message: `[${botId}] Unknown request type: ${request.type}` 
+              };
+          }
+        }
+        
+        // Small delay to avoid overwhelming the socket
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        // Send response
+        if (botData.socket && !botData.socket.closed) {
+          await botData.socket.send(JSON.stringify(response));
+        } else {
+          console.warn(`[${botId}] Socket closed before sending response`);
+          botData.isConnected = false;
+          break;
+        }
+      } catch (error) {
+        // Handle ZMQ errors
+        if (error.code === 'EAGAIN' || error.code === 'EFSM') {
+          if (!botData.isConnected || this.shuttingDown) break;
+        } else {
+          console.error(`[${botId}] Error in message loop:`, error.message);
+        }
+        
+        // Try to send error response
+        if (botData.isConnected && botData.socket && !botData.socket.closed && !this.shuttingDown) {
+          try {
+            await botData.socket.send(JSON.stringify({
+              status: 'error',
+              message: `[${botId}] ${error.message || 'Unknown error'}`
+            }));
+          } catch (sendError) {
+            console.error(`[${botId}] Failed to send error response:`, sendError.message);
+            botData.isConnected = false;
+            break;
+          }
+        } else if (!botData.isConnected || this.shuttingDown) {
+          break;
+        }
+      }
+    }
+    
+    console.log(`[${botId}] Message loop ended`);
+    await this.cleanupBot(botId);
+  }
+
+  async executeAction(botId, actionIndex) {
+    const botData = this.bots.get(botId);
+    if (!botData) return { reward: -1, done: true };
+    
+    const { bot, actions } = botData;
+    
+    // Safety check
+    if (!bot || !actions || !bot.mcData) {
+      return { reward: -1, done: true };
+    }
+    
     let reward = 0;
     let done = false;
+    
     const actionFunctions = [
-      /* 0 */ async () => await this.actions.moveForward(),
-      /* 1 */ async () => await this.actions.turnLeft(),
-      /* 2 */ async () => await this.actions.turnRight(),
-      /* 3 */ async () => await this.actions.jumpUp(),
-      /* 4 */ async () => await this.actions.breakBlock()
+      /* 0 */ async () => await actions.moveForward(),
+      /* 1 */ async () => await actions.turnLeft(),
+      /* 2 */ async () => await actions.turnRight(),
+      /* 3 */ async () => await actions.jumpUp(),
+      /* 4 */ async () => await actions.breakBlock()
     ];
-
+    
     if (actionIndex >= 0 && actionIndex < actionFunctions.length) {
-      // console.log(`Executing Action: ${actionIndex}`); // Reduce logging noise
       try {
         const success = await actionFunctions[actionIndex]();
-        if (actionIndex === 4 && success === true) { reward = 1.0; console.log("Reward: +1.0 (Broke block)"); }
-        else if (actionIndex === 4 && success === false) { reward = -0.1; /* console.log("Reward: -0.1 (Failed breakBlock)"); */ }
-        else { reward = -0.01; /* Base movement cost */ }
-      } catch (actionError) {
-          console.error(`Error executing action ${actionIndex}:`, actionError);
-          reward = -0.5; // Penalize errors
-          // done = true; // Optionally end episode on action error
+        
+        if (actionIndex === 4 && success === true) {
+          reward = 1.0;
+          console.log(`[${botId}] Reward: +1.0 (Broke block)`);
+        } else if (actionIndex === 4 && success === false) {
+          reward = -0.1;
+        } else {
+          reward = -0.01; // Base movement cost
+        }
+      } catch (error) {
+        console.error(`[${botId}] Error executing action ${actionIndex}:`, error.message);
+        reward = -0.5;
       }
     } else {
-        console.warn(`Invalid action index received: ${actionIndex}`);
-        reward = -0.2; // Penalize invalid actions
+      console.warn(`[${botId}] Invalid action index: ${actionIndex}`);
+      reward = -0.2;
     }
-
-    // Update state *after* action potentially changes it
-    // Ensure observation doesn't error out
-    const newState = this.getObservation();
+    
+    // Update state
+    const newState = this.getObservation(botId);
     if (newState !== null) {
-        this.currentState = newState;
-    } else {
-        console.warn("getObservation returned null after action, state not updated.");
-        // Decide how to handle this - maybe reuse old state or assign default?
-        // For now, currentState might remain stale if getObservation fails.
+      botData.currentState = newState;
     }
-
-    // Add any termination conditions here, e.g.
-    // if (this.bot.health.food <= 0) done = true;
-
+    
     return { reward, done };
   }
 
-  async reset() {
-     // Safeguard needed here too
-     if (!this.bot || !this.actions || !this.bot.mcData) {
-         console.error("Attempted reset before bot/actions/mcData ready.");
-         // What should reset return if not ready? Need consistent state format.
-         // Maybe return a zeroed-out state or handle in Python?
-         // For now, just log and let currentState potentially be null.
-         return;
-     }
-    console.log("Resetting environment (facing nearest tree)...");
+  async resetBot(botId) {
+    const botData = this.bots.get(botId);
+    if (!botData) return;
+    
+    const { bot, actions } = botData;
+    
+    // Safety check
+    if (!bot || !actions || !bot.mcData) {
+      console.error(`[${botId}] Cannot reset: bot not fully initialized`);
+      return;
+    }
+    
+    console.log(`[${botId}] Resetting bot (facing nearest tree)...`);
+    
     try {
-        await this.actions.findAndFaceNearestTree();
-    } catch (resetError) {
-        console.error("Error during reset action (findAndFaceNearestTree):", resetError);
+      await actions.findAndFaceNearestTree();
+      
+      // Update state
+      const newState = this.getObservation(botId);
+      if (newState !== null) {
+        botData.currentState = newState;
+      }
+    } catch (error) {
+      console.error(`[${botId}] Error resetting:`, error.message);
     }
-    // Update state after reset action attempt
-    const newState = this.getObservation();
-     if (newState !== null) {
-        this.currentState = newState;
-     } else {
-        console.warn("getObservation returned null after reset, state not updated.");
-     }
-    console.log("Environment reset complete.");
+    
+    console.log(`[${botId}] Reset complete`);
   }
 
-  async close() {
-    console.log("Attempting graceful shutdown sequence...");
-    // Prevent multiple close calls / check if already closed
-    if (!this.isConnected && !this.bot && !this.socket) {
-        console.log("Shutdown already complete or in progress.");
-        return;
-    }
-    this.isConnected = false; // Signal loops to stop
-
-    // Close socket safely
-    if (this.socket && !this.socket.closed) {
-      console.log("Closing ZeroMQ socket...");
+  async cleanupBot(botId) {
+    console.log(`[${botId}] Cleaning up resources...`);
+    
+    const botData = this.bots.get(botId);
+    if (!botData) return;
+    
+    // Close socket
+    if (botData.socket && !botData.socket.closed) {
       try {
-          this.socket.close();
-          console.log("ZeroMQ socket closed.");
-      } catch (e) {
-          // Ignore errors if already closing/closed
-          if (e.code !== 'EFSM') console.error("Error closing ZMQ socket:", e);
+        await botData.socket.close();
+        console.log(`[${botId}] Socket closed`);
+      } catch (error) {
+        if (error.code !== 'EFSM') {
+          console.error(`[${botId}] Error closing socket:`, error.message);
+        }
       }
     }
-    this.socket = null; // Release reference
-
-    // Disconnect bot safely
-    if (this.bot) {
-      const tempBot = this.bot; // Store reference
-      this.bot = null; // Set this.bot to null immediately to prevent race conditions in event handlers
-      console.log("Disconnecting Mineflayer bot...");
+    
+    // Disconnect bot
+    if (botData.bot) {
       try {
-          tempBot.end('RL bridge shutting down.'); // Use .end()
-          console.log("Mineflayer bot disconnect requested.");
-      } catch(e) {
-          console.error("Error calling bot.end():", e);
+        botData.bot.end(`[${botId}] Cleanup`);
+        console.log(`[${botId}] Bot disconnected`);
+      } catch (error) {
+        console.error(`[${botId}] Error disconnecting bot:`, error.message);
       }
     }
-
-    console.log("Shutdown sequence finished.");
+    
+    // Remove from map
+    this.bots.delete(botId);
+    console.log(`[${botId}] Cleanup complete`);
   }
-} // End of RLBridge Class
+
+  async shutdown() {
+    console.log("\nInitiating server shutdown...");
+    
+    this.shuttingDown = true;
+    
+    // Close all bots
+    const cleanupPromises = [];
+    for (const botId of this.bots.keys()) {
+      cleanupPromises.push(this.cleanupBot(botId));
+    }
+    
+    await Promise.all(cleanupPromises);
+    console.log("All bots cleaned up");
+  }
+}
 
 // --- Main Execution ---
 async function main() {
   const argv = yargs(hideBin(process.argv))
-    .usage('Usage: node $0 --ip <LAN_IP_Address> --port <LAN_Port_Number>')
-    // --- Required Arguments for Minecraft Connection ---
+    .usage('Usage: node $0 --ip <SERVER_IP> --port <PORT> [--num-bots <COUNT>] [--base-port <ZMQ_BASE_PORT>]')
     .option('ip', {
-        type: 'string',
-        description: 'REQUIRED: The IP address of the computer hosting the Minecraft LAN game (find with ipconfig/ip addr)',
+      type: 'string',
+      description: 'Minecraft server IP address',
+      demandOption: true
     })
     .option('port', {
-        type: 'number',
-        description: 'REQUIRED: The port number displayed in Minecraft chat after opening to LAN',
+      type: 'number',
+      description: 'Minecraft server port',
+      demandOption: true
     })
-    // --- Demand the required arguments ---
-    .demandOption(['ip', 'port'], 'Please provide the Minecraft host IP (--ip) and LAN port (--port)')
+    .option('num-bots', {
+      type: 'number',
+      description: 'Number of bots to run in parallel',
+      default: 3
+    })
+    .option('base-port', {
+      type: 'number',
+      description: 'Base ZMQ port (will use base-port to base-port+num-bots-1)',
+      default: 5555
+    })
     .help()
     .alias('help', 'h')
     .argv;
 
-  let bridge = null;
+  let server = null;
 
-  // Centralized shutdown logic
-  const shutdown = async (signal) => {
-    console.log(`\nReceived ${signal}. Initiating shutdown...`);
-    if (bridge) { // Check if bridge exists
-        await bridge.close(); // Call close method
-    } else {
-        console.log("Bridge not initialized, exiting.");
+  // Handle shutdown signals
+  const handleShutdown = async (signal) => {
+    console.log(`\nReceived ${signal} signal`);
+    if (server) {
+      await server.shutdown();
     }
-    // Allow time for async operations in close()
-    setTimeout(() => process.exit(0), 1000); // Increased timeout slightly
+    process.exit(0);
   };
 
-  // Register signal handlers ONCE
-  process.once('SIGINT', () => shutdown('SIGINT')); // Handle Ctrl+C
-  process.once('SIGTERM', () => shutdown('SIGTERM')); // Handle termination signal
+  // Register signal handlers
+  process.once('SIGINT', () => handleShutdown('SIGINT'));
+  process.once('SIGTERM', () => handleShutdown('SIGTERM'));
 
   try {
-      // Create RLBridge instance with simplified options
-      bridge = new RLBridge({
-        botOptions: {
-          host: argv.ip,         // IP address (required)
-          port: argv.port,       // Port (required)
-          username: 'RLBot',     // Default username
-          auth: 'offline'        // Default: offline for LAN
-          // Other defaults handled in RLBridge constructor
-        }
-      });
+    // Create and initialize server
+    server = new RLBridgeServer({
+      host: argv.ip,
+      port: argv.port,
+      numBots: argv['num-bots'],
+      basePort: argv['base-port']
+    });
 
-      console.log("Initializing RL Bridge...");
-      await bridge.init(); // Initialize the bridge, including bot connection and mcData wait
-      console.log("RL Bridge Ready. Connect your Python client now.");
-      // Script will now stay alive running the mainLoop
-
+    await server.init();
+    console.log("\nRL Bridge Server ready - waiting for Python clients to connect");
+    
   } catch (error) {
-      // Catch initialization errors (e.g., connection failed, mcData timeout)
-      console.error("-----------------------------------------");
-      console.error("FATAL ERROR during initialization:", error.message);
-      console.error("-----------------------------------------");
-      if (bridge) {
-         console.log("Attempting cleanup after initialization error...");
-         await bridge.close().catch(e => console.error("Error during cleanup:", e));
-      }
-      process.exit(1); // Exit with error code
+    console.error("\nFATAL ERROR:", error.message);
+    
+    if (server) {
+      await server.shutdown().catch(e => 
+        console.error("Error during shutdown:", e.message)
+      );
+    }
+    
+    process.exit(1);
   }
 }
 
 // Run the main function
-main();
+main().catch(error => {
+  console.error("Unhandled error in main:", error);
+  process.exit(1);
+});
