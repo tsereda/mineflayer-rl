@@ -4,3 +4,4 @@ minecraft_ppo_model_interrupted.zip
 wandb
 minecraft_ppo_model_interrupted_a2o3nvl0.zip
 minecraft_ppo_parallel_interrupted_*
+python/__pycache__/
