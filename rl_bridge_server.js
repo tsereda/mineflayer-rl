@@ -318,7 +318,7 @@ class RLBridgeServer {
         }
         
         // Small delay to avoid overwhelming the socket
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, 200));
         
         // Send response
         if (botData.socket && !botData.socket.closed) {
@@ -359,6 +359,7 @@ class RLBridgeServer {
   }
 
   async executeAction(botId, actionIndex) {
+    await new Promise(resolve => setTimeout(resolve, 500));
     const botData = this.bots.get(botId);
     if (!botData) return { reward: -1, done: true };
     

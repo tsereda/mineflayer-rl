@@ -22,7 +22,7 @@ async function main() {
     .option('num-bots', {
       type: 'number',
       description: 'Number of bots to run in parallel',
-      default: 6
+      default: 3
     })
     .option('base-port', {
       type: 'number',
