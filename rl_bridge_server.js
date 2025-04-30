@@ -12,7 +12,7 @@ class RLBridgeServer {
       host: options.host || 'localhost',
       port: options.port || 25565,
       basePort: options.basePort || 5555,
-      numBots: options.numBots || 3,
+      numBots: options.numBots || 6,
     };
     
     // Map to store bot instances: Map<botId, {socket, bot, actions, currentState, isConnected}>
@@ -300,6 +300,14 @@ class RLBridgeServer {
               botData.isConnected = false;
               response.message = `[${botId}] Closing down`;
               break;
+
+            case 'batch_actions':
+              const batchResult = await this.processBatchedActions(
+                botId, 
+                request.actions
+              );
+              response = batchResult;
+              break;
               
             default:
               response = { 
@@ -400,6 +408,41 @@ class RLBridgeServer {
     }
     
     return { reward, done };
+  }
+
+  async processBatchedActions(botId, actions) {
+    const botData = this.bots.get(botId);
+    if (!botData) return { status: 'error', message: 'Bot not found' };
+    
+    const { bot, actions: botActions } = botData;
+    if (!bot || !botActions) return { status: 'error', message: 'Bot not initialized' };
+    
+    const rewards = [];
+    let done = false;
+    
+    // Execute all actions in sequence
+    for (let i = 0; i < actions.length && !done; i++) {
+      const actionIndex = actions[i];
+      
+      // Execute the action
+      const result = await this.executeAction(botId, actionIndex);
+      rewards.push(result.reward);
+      
+      // Check if done
+      if (result.done) {
+        done = true;
+      }
+    }
+    
+    // Get final state after all actions
+    const finalState = this.getObservation(botId);
+    
+    return {
+      status: 'ok',
+      rewards,
+      next_state: finalState,
+      done
+    };
   }
 
   async resetBot(botId) {

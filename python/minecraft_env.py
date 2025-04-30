@@ -6,7 +6,7 @@ Translates bot states and actions into RL-compatible format
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, List, Optional
 
 from minecraft_bridge import MinecraftBridge
 
@@ -151,6 +151,53 @@ class MinecraftEnv(gym.Env):
         }
         
         return next_state_vector, reward, terminated, truncated, info
+        
+    def step_batch(self, actions: List[int]) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
+        """
+        Execute multiple steps at once for improved performance
+        
+        Args:
+            actions (list): List of action indices to execute in sequence
+            
+        Returns:
+            tuple: (final_observation, total_reward, terminated, truncated, info)
+        """
+        # Validate actions
+        for action in actions:
+            assert self.action_space.contains(action), f"Invalid action {action}"
+        
+        # Execute batch of actions
+        result = self.bridge.batch_actions(actions)
+        
+        # Calculate total reward
+        total_reward = sum(result["rewards"])
+        
+        # Process final state
+        next_state_vector = self.process_state(result["next_state"])
+        self.current_state = result["next_state"]
+        
+        # Update step counter
+        self.steps += len(result["rewards"])
+        
+        # Check if episode should end
+        truncated = self.steps >= self.max_steps
+        terminated = result["done"]
+        
+        # Track logs collected
+        current_logs = self.current_state.get("inventory_logs", 0)
+        if current_logs > self.total_logs_collected:
+            self.total_logs_collected = current_logs
+        
+        # Additional info
+        info = {
+            "logs_collected": current_logs,
+            "steps": self.steps,
+            "bot_id": self.bot_id,
+            "individual_rewards": result["rewards"],
+            "actions_taken": len(result["rewards"])
+        }
+        
+        return next_state_vector, total_reward, terminated, truncated, info
     
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
@@ -171,6 +218,7 @@ class MinecraftEnv(gym.Env):
         
         # Reset step counter
         self.steps = 0
+        self.total_logs_collected = 0
         
         # Process initial state
         state_vector = self.process_state(state_dict)

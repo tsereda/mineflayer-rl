@@ -12,7 +12,7 @@ from utils import make_parallel_envs
 from callbacks import ParallelLoggingCallback
 
 def train_parallel_ppo(
-    num_envs=3,
+    num_envs=6,
     bridge_host="127.0.0.1", 
     start_port=5555, 
     total_timesteps=100000,

@@ -127,6 +127,37 @@ class MinecraftBridge:
             "done": response["done"]
         }
     
+    def batch_actions(self, actions):
+        """
+        Execute multiple actions in a single request
+        
+        Args:
+            actions (list): List of action indices to execute in sequence
+            
+        Returns:
+            dict: Result containing rewards for each action and final state
+        """
+        request_data = {
+            "type": "batch_actions",
+            "actions": actions
+        }
+        
+        response = self.safe_request(request_data)
+        
+        if response["status"] != "ok":
+            self.print_log(f"Error in batch actions: {response.get('message', 'Unknown error')}")
+            return {
+                "rewards": [-0.1] * len(actions),
+                "next_state": self.get_state(),
+                "done": True
+            }
+        
+        return {
+            "rewards": response["rewards"],
+            "next_state": response["next_state"],
+            "done": response["done"]
+        }
+        
     def reset(self) -> Dict[str, Any]:
         """
         Reset environment in the JavaScript bot
